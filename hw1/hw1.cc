@@ -23,15 +23,31 @@ int main(int argc, char** argv) {
     MPI_File f_in, f_out;
     MPI_File_open(MPI_COMM_WORLD, argv[2], MPI_MODE_RDONLY, MPI_INFO_NULL, &f_in);
     MPI_File_open(MPI_COMM_WORLD, argv[3], MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &f_out);
+
+    double begin, end;
+    double IO_time, computing_time, communication_time = 0;
     
     // If only oen process, or small input. 
     if(size == 1 || size >= N){
         if(rank == 0){
             float *buf;
             buf = new float[N];
+            begin = MPI_Wtime();
             MPI_File_read(f_in, buf, N, MPI_FLOAT, MPI_STATUS_IGNORE);
+            end = MPI_Wtime();
+            IO_time += (end - begin);
+
+            begin = MPI_Wtime();
             std::sort(buf, buf + N);
+            end = MPI_Wtime();
+            computing_time += (end - begin);
+
+            begin = MPI_Wtime();
             MPI_File_write(f_out, buf, N, MPI_FLOAT, MPI_STATUS_IGNORE);
+            end = MPI_Wtime();
+            IO_time += (end - begin);
+
+            printf("[%2d] IO time: %f, Computing time: %f, Communication time: %f, Total time: %f\n", rank, IO_time, computing_time, communication_time, IO_time + computing_time + communication_time);
         }
         MPI_File_close(&f_in);
         MPI_File_close(&f_out);
@@ -48,30 +64,37 @@ int main(int argc, char** argv) {
         buf_size = buf_size + 1;
         buf_size_last = N % (buf_size);
     }
-    printf("rank = %d, size = %d, N = %d, buf_size = %d, buf_size_last = %d\n", rank, size, N, buf_size, buf_size_last);
+    // printf("rank = %d, size = %d, N = %d, buf_size = %d, buf_size_last = %d\n", rank, size, N, buf_size, buf_size_last);
 
     float *my_buf, *recv_buf, *tmp_buf;
     my_buf = new float[buf_size];
     recv_buf = new float[buf_size];
     tmp_buf = new float[buf_size];
+    begin = MPI_Wtime();
     MPI_File_read_at(f_in, sizeof(float) * rank * buf_size, my_buf, buf_size, MPI_FLOAT, MPI_STATUS_IGNORE);	
+    end = MPI_Wtime();
+    IO_time += (end - begin);
 
-    //deal with the last process
+    // Deal with the last process: fill the buffer to buf_size with INF.
     if(rank == size - 1 && buf_size != buf_size_last){
         for(int i = buf_size_last; i < buf_size; i++){
             my_buf[i] = INFINITY;
         }
     }
     
-    //local sort.
+    // Local sort.
+    begin = MPI_Wtime();
     std::sort(my_buf, my_buf + buf_size);
-    
-    //Main work here.
+    end = MPI_Wtime();
+    computing_time += (end - begin);
+
+    // Main work here.
     int phase, done, alldone = 0;
     int partner;
     while(!alldone){
         partner = find_partner(phase, rank, size);
-
+        
+        begin = MPI_Wtime();
         if(rank % 2 == 0){
             MPI_Send(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD);
             MPI_Recv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);    
@@ -79,24 +102,38 @@ int main(int argc, char** argv) {
             MPI_Recv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             MPI_Send(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD);
         }
+        end = MPI_Wtime();
+        communication_time += (end - begin);
         
         // MPI_Sendrecv(my_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
         if(partner != MPI_PROC_NULL){
+            begin = MPI_Wtime();
             done = merge(phase, rank, my_buf, recv_buf, tmp_buf, buf_size);
+            end = MPI_Wtime();
+            computing_time += (end - begin);
+
             swap_array(&my_buf, &tmp_buf);
         }
-
-        MPI_Allreduce(&done, &alldone, 1, MPI_FLOAT, MPI_LAND, MPI_COMM_WORLD);
         
+        begin = MPI_Wtime();
+        MPI_Allreduce(&done, &alldone, 1, MPI_FLOAT, MPI_LAND, MPI_COMM_WORLD);
+        end = MPI_Wtime();
+        communication_time += (end - begin);
+
         phase++;
     }
-
+    
+    begin = MPI_Wtime();
     if(rank == size - 1 && buf_size != buf_size_last){
         MPI_File_write_at(f_out, sizeof(float) * rank * buf_size, my_buf, buf_size_last, MPI_FLOAT, MPI_STATUS_IGNORE);
     }else{
         MPI_File_write_at(f_out, sizeof(float) * rank * buf_size, my_buf, buf_size, MPI_FLOAT, MPI_STATUS_IGNORE);
     }
+    end = MPI_Wtime();
+    IO_time += (end - begin);
+
+    printf("[%2d] IO time: %f, Computing time: %f, Communication time: %f, Total time: %f\n", rank, IO_time, computing_time, communication_time, IO_time + computing_time + communication_time);
     MPI_File_close(&f_in);
     MPI_File_close(&f_out);
     MPI_Finalize();
