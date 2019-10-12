@@ -18,6 +18,7 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Status status;  
+    MPI_Request req;
     int N = atoll(argv[1]); 
     
     MPI_File f_in, f_out;
@@ -95,6 +96,7 @@ int main(int argc, char** argv) {
         partner = find_partner(phase, rank, size);
         
         begin = MPI_Wtime();
+        /*
         if(rank % 2 == 0){
             MPI_Send(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD);
             MPI_Recv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);    
@@ -102,6 +104,12 @@ int main(int argc, char** argv) {
             MPI_Recv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             MPI_Send(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD);
         }
+        */
+        
+        MPI_Isend(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD, &req);
+        MPI_Irecv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &req); 
+        MPI_Wait(&req, &status);
+        
         end = MPI_Wtime();
         communication_time += (end - begin);
         
