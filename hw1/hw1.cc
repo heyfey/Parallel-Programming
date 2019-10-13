@@ -96,25 +96,13 @@ int main(int argc, char** argv) {
         partner = find_partner(phase, rank, size);
         
         begin = MPI_Wtime();
-        /*
-        if(rank % 2 == 0){
-            MPI_Send(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD);
-            MPI_Recv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);    
-        }else{
-            MPI_Recv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-            MPI_Send(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD);
-        }
-        */
-        
         MPI_Isend(my_buf, buf_size, MPI_FLOAT, partner, 0, MPI_COMM_WORLD, &req);
         MPI_Irecv(recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &req); 
-        MPI_Wait(&req, &status);
-        
+        MPI_Wait(&req, &status);    
         end = MPI_Wtime();
         communication_time += (end - begin);
         
-        // MPI_Sendrecv(my_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, recv_buf, buf_size, MPI_FLOAT, partner, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
+        
         if(partner != MPI_PROC_NULL){
             begin = MPI_Wtime();
             done = merge(phase, rank, my_buf, recv_buf, tmp_buf, buf_size);
@@ -122,6 +110,8 @@ int main(int argc, char** argv) {
             computing_time += (end - begin);
 
             swap_array(&my_buf, &tmp_buf);
+            if(done == 2) swap_array(&my_buf, &tmp_buf);
+            if(done == 3){ swap_array(&my_buf, &tmp_buf); swap_array(&my_buf, &recv_buf); done = 0;}
         }
         
         begin = MPI_Wtime();
@@ -132,7 +122,7 @@ int main(int argc, char** argv) {
         phase++;
     }
     
-    begin = MPI_Wtime();
+    begin = MPI_Wtime();  
     if(rank == size - 1 && buf_size != buf_size_last){
         MPI_File_write_at(f_out, sizeof(float) * rank * buf_size, my_buf, buf_size_last, MPI_FLOAT, MPI_STATUS_IGNORE);
     }else{
@@ -189,6 +179,8 @@ int merge(int phase, int rank, float *my_buf, float *recv_buf, float *tmp_buf, i
 }
 
 int merge_low(float *my_buf, float *recv_buf, float *tmp_buf, int size){
+    if(my_buf[size-1] <= recv_buf[0]) return 2;
+    if(recv_buf[size-1] <= my_buf[0]) return 3;
     int done = 1;
     int i = 0, j = 0;
     for(int idx = 0; idx < size; idx++){
@@ -205,6 +197,8 @@ int merge_low(float *my_buf, float *recv_buf, float *tmp_buf, int size){
 }
 
 int merge_high(float *my_buf, float *recv_buf, float *tmp_buf, int size){
+    if(my_buf[0] >= recv_buf[size-1]) return 2;
+    if(recv_buf[0] >= my_buf[size-1]) return 3;
     int done = 1;
     int i = size - 1;
     int j = size - 1;
