@@ -105,7 +105,11 @@ int main(int argc, char** argv) {
         
         if(partner != MPI_PROC_NULL){
             begin = MPI_Wtime();
-            done = merge(phase, rank, my_buf, recv_buf, tmp_buf, buf_size);
+            if(rank < partner){
+                done = merge_low(my_buf, recv_buf, tmp_buf, buf_size);
+            }else{
+                done = merge_high(my_buf, recv_buf, tmp_buf, buf_size);
+            }
             end = MPI_Wtime();
             computing_time += (end - begin);
 
@@ -138,7 +142,6 @@ int main(int argc, char** argv) {
   
 }
 
-
 int find_partner(int phase, int rank, int size){
     int partner;
     if(phase % 2 == 0){ // even phase
@@ -158,24 +161,6 @@ int find_partner(int phase, int rank, int size){
         partner = MPI_PROC_NULL;
     }
     return partner;
-}
-
-int merge(int phase, int rank, float *my_buf, float *recv_buf, float *tmp_buf, int size){
-    int done = 0;
-    if(phase % 2 == 0){ // even phase
-        if(rank % 2 == 0){
-            done = merge_low(my_buf, recv_buf, tmp_buf, size);
-        }else{
-            done = merge_high(my_buf, recv_buf, tmp_buf, size);
-        }
-    }else{ // odd phase
-        if(rank % 2 == 0){
-            done = merge_high(my_buf, recv_buf, tmp_buf, size);
-        }else{
-            done = merge_low(my_buf, recv_buf, tmp_buf, size);
-        }
-    }
-    return done;
 }
 
 int merge_low(float *my_buf, float *recv_buf, float *tmp_buf, int size){
