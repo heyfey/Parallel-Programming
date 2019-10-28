@@ -69,6 +69,9 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    double begin, end;
+    double computing_time, communication_time, write_time = 0;
+
     if (rank == size-1) {
         /* allocate memory for image */
         int* image = (int*)malloc(width * height * sizeof(int));
@@ -76,14 +79,20 @@ int main(int argc, char** argv) {
      
         MPI_Status status;   
         int source;
+        begin = MPI_Wtime();
 #pragma omp parallel for schedule(dynamic, 1)
         for (int j = 0; j < height; j++) {
             source = j % (size - 1);
             MPI_Recv(&image[j * width], width, MPI_INT, source, j, MPI_COMM_WORLD, &status);
         }
+        end = MPI_Wtime();
+        communication_time += (end - begin);
 
         /* draw and cleanup */
+        begin = MPI_Wtime();
         write_png(filename, iters, width, height, image);
+        end = MPI_Wtime();
+        write_time += (end - begin);
         free(image);
     } else {
         /* allocate memory for image */
@@ -93,6 +102,7 @@ int main(int argc, char** argv) {
         /* mandelbrot set */
         for (int j = rank; j < height; j += size-1) {
             double y0 = j * ((upper - lower) / height) + lower;
+            begin = MPI_Wtime();
 #pragma omp parallel for schedule(dynamic, 1)
             for (int i = 0; i < width; ++i) {
                 double x0 = i * ((right - left) / width) + left;
@@ -110,9 +120,16 @@ int main(int argc, char** argv) {
                 }
                 image_row[i] = repeats;
             }
+            end = MPI_Wtime();
+            computing_time += (end - begin);
+
+            begin = MPI_Wtime();
             MPI_Send(image_row, width, MPI_INT, size-1, j, MPI_COMM_WORLD);
+            end = MPI_Wtime();
+            communication_time += (end - begin);
         }
         free(image_row);
     }
     MPI_Finalize();
+    printf("[%2d] Communication time: %f,Computing time: %f ,Write time: %f\n", rank, communication_time, computing_time, write_time);
 }
