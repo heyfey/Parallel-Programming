@@ -64,8 +64,8 @@ int main(int argc, char** argv) {
     int width = strtol(argv[7], 0, 10);
     int height = strtol(argv[8], 0, 10);
 
-    int rank, size;
-    MPI_Init(&argc, &argv);
+    int rank, size, provided;
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
@@ -76,6 +76,7 @@ int main(int argc, char** argv) {
      
         MPI_Status status;   
         int source;
+#pragma omp parallel for schedule(dynamic, 1)
         for (int j = 0; j < height; j++) {
             source = j % (size - 1);
             MPI_Recv(&image[j * width], width, MPI_INT, source, j, MPI_COMM_WORLD, &status);
@@ -113,4 +114,5 @@ int main(int argc, char** argv) {
         }
         free(image_row);
     }
+    MPI_Finalize();
 }
