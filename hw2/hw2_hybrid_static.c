@@ -47,6 +47,67 @@ void write_png(const char* filename, int iters, int width, int height, const int
     fclose(fp);
 }
 
+void mandelbrot_set(int rank, int size, int iters, double left, double right, double lower, double upper, int width, int height, int* image_row, int num_threads, double* computing, double* communication) {
+  double begin, end;
+  double begin2, end2;
+  begin = MPI_Wtime(); 
+  for (int j = rank; j < height; j += size) {
+      double y0 = j * ((upper - lower) / height) + lower;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads)
+      for (int i = 0; i < width; ++i) {
+          double x0 = i * ((right - left) / width) + left;
+  
+          int repeats = 0;
+          double x = 0;
+          double y = 0;
+          double length_squared = 0;
+          while (repeats < iters && length_squared < 4) {
+              double temp = x * x - y * y + x0;
+              y = 2 * x * y + y0;
+              x = temp;
+              length_squared = x * x + y * y;
+              ++repeats;
+          }
+          image_row[i] = repeats;
+      }
+      if (rank != size-1) {
+          begin2 = MPI_Wtime();
+          MPI_Send(image_row, width, MPI_INT, size-1, j, MPI_COMM_WORLD);
+          end2 = MPI_Wtime();
+          *communication += (end2 - begin2);
+      } else {
+          image_row += (size * width); // last rank is master
+      }
+  }
+  end = MPI_Wtime();
+  *computing += ((end - begin) - *communication);
+}
+
+typedef struct thread_data {
+    int num_threads;
+    int size;
+    int width;
+    int height;
+    int* image;
+    double communication_time;
+} thread_data;
+
+void* recv_t(void* thread_d) {
+    thread_data* td = (thread_data*)thread_d;
+    MPI_Status status;
+    int source;
+    double begin, end;
+    for (int j = 0; j < td->height; j++) {
+        source = j % td->size;
+        if (source != (td->size - 1)) { // recv message except for the last rank (master)
+            begin = MPI_Wtime();
+            MPI_Recv(&td->image[j * td->width], td->width, MPI_INT, source, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+            end = MPI_Wtime();
+            td->communication_time += (end - begin);
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     /* detect how many CPUs are available */
     cpu_set_t cpu_set;
@@ -76,17 +137,26 @@ int main(int argc, char** argv) {
         /* allocate memory for image */
         int* image = (int*)malloc(width * height * sizeof(int));
         assert(image);
-     
-        MPI_Status status;   
-        int source;
-        begin = MPI_Wtime();
-#pragma omp parallel for schedule(dynamic, 1)
-        for (int j = 0; j < height; j++) {
-            source = j % (size - 1);
-            MPI_Recv(&image[j * width], width, MPI_INT, source, j, MPI_COMM_WORLD, &status);
+
+        /* use a thread to receive message */
+        pthread_t thread;
+        thread_data td;
+        td.size = size;
+        td.width = width;
+        td.height = height;
+        td.image = image;
+        td.communication_time = 0;
+        int rc;
+        rc = pthread_create(&thread, NULL, recv_t, (void*)&td);
+        if (rc) {
+            printf("ERROR; return code from pthread_create() is %d\n", rc);
+            exit(-1);
         }
-        end = MPI_Wtime();
-        communication_time += (end - begin);
+        
+        mandelbrot_set(rank, size, iters, left, right, lower, upper, width, height, &image[(size-1) * width], CPU_COUNT(&cpu_set)-1, &computing_time, &communication_time);
+        
+        pthread_join(thread, NULL);
+        communication_time = td.communication_time;
 
         /* draw and cleanup */
         begin = MPI_Wtime();
@@ -100,34 +170,8 @@ int main(int argc, char** argv) {
         assert(image_row);
 
         /* mandelbrot set */
-        for (int j = rank; j < height; j += size-1) {
-            double y0 = j * ((upper - lower) / height) + lower;
-            begin = MPI_Wtime();
-#pragma omp parallel for schedule(dynamic, 1)
-            for (int i = 0; i < width; ++i) {
-                double x0 = i * ((right - left) / width) + left;
+        mandelbrot_set(rank, size, iters, left, right, lower, upper, width, height, image_row, CPU_COUNT(&cpu_set), &computing_time, &communication_time);
 
-                int repeats = 0;
-                double x = 0;
-                double y = 0;
-                double length_squared = 0;
-                while (repeats < iters && length_squared < 4) {
-                    double temp = x * x - y * y + x0;
-                    y = 2 * x * y + y0;
-                    x = temp;
-                    length_squared = x * x + y * y;
-                    ++repeats;
-                }
-                image_row[i] = repeats;
-            }
-            end = MPI_Wtime();
-            computing_time += (end - begin);
-
-            begin = MPI_Wtime();
-            MPI_Send(image_row, width, MPI_INT, size-1, j, MPI_COMM_WORLD);
-            end = MPI_Wtime();
-            communication_time += (end - begin);
-        }
         free(image_row);
     }
     MPI_Finalize();
