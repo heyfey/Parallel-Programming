@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer) {
     FILE* fp = fopen(filename, "wb");
@@ -57,6 +58,7 @@ typedef struct thread_data {
     int width;
     int height;
     int* image;
+    double computing_time;
 } thread_data;
 
 pthread_mutex_t mutex;
@@ -65,6 +67,8 @@ int next_row = 0;
 void* mandelbrot_set_t(void* thread_d) {
     thread_data* td = (thread_data*)thread_d;
     int j;
+    struct timespec begin, end;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     while (1) {
         pthread_mutex_lock(&mutex);
         if (next_row < td->height) {
@@ -73,6 +77,9 @@ void* mandelbrot_set_t(void* thread_d) {
             pthread_mutex_unlock(&mutex);
         } else {
             pthread_mutex_unlock(&mutex);
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            td->computing_time = (end.tv_sec - begin.tv_sec);
+            td->computing_time += (end.tv_nsec - begin.tv_nsec) / 1000000000.0;
             pthread_exit(NULL);
         }
 
@@ -147,6 +154,16 @@ int main(int argc, char** argv) {
     }
 
     /* draw and cleanup */
+    clock_t begin, end;
+    double write_time;
+    begin = clock();
     write_png(filename, iters, width, height, image);
+    end = clock();
+    write_time = ((double) (end - begin)) / CLOCKS_PER_SEC;
     free(image);
+
+    for (t = 0; t < CPU_COUNT(&cpu_set); t++) {
+        printf("[thread %2d] Computing time: %f\n", t, td[t].computing_time);
+    }
+    printf("Write time: %f\n", write_time);
 }
