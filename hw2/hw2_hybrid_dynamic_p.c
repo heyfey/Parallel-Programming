@@ -89,6 +89,7 @@ typedef struct thread_data {
     int* image;
     int waiting;
     double communication_time;
+    double waiting_time;
     volatile int* ready_to_write;
 } thread_data;
 
@@ -105,8 +106,13 @@ void* recv_t(void* thread_d) {
     while (td->waiting) {
         begin = MPI_Wtime();
         MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        end = MPI_Wtime();
+        td->waiting_time += (end - begin);
+        
         source = status.MPI_SOURCE;
         j = status.MPI_TAG;
+
+        begin = MPI_Wtime();
         MPI_Recv(&td->image[j * td->width], td->width, MPI_INT, source, j, MPI_COMM_WORLD, &status);
         end = MPI_Wtime();
         td->communication_time += (end - begin);
@@ -122,6 +128,7 @@ void* recv_t(void* thread_d) {
         MPI_Send(&next_row, 1, MPI_INT, source, 123, MPI_COMM_WORLD);
         end = MPI_Wtime();
         td->communication_time += (end - begin);
+        
         if (next_row < 0) {
             td->waiting--;
         }
@@ -151,7 +158,7 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     double begin, end;
-    double computing_time, communication_time, write_time = 0;
+    double computing_time, communication_time, waiting_time, write_time = 0;
 
     next_row_global = (height-1) - (size-1);
 
@@ -174,6 +181,7 @@ int main(int argc, char** argv) {
         td.image = image;
         td.waiting = size - 1;
         td.communication_time = 0;
+        td.waiting_time = 0;
         td.ready_to_write = ready_to_write;
         int rc;
         rc = pthread_create(&thread, NULL, recv_t, (void*)&td);
@@ -218,6 +226,7 @@ int main(int argc, char** argv) {
 
         pthread_join(thread, NULL);
         communication_time = td.communication_time;
+        waiting_time = td.waiting_time;
         
         begin = MPI_Wtime();
         pthread_join(thread_wrt, NULL);
@@ -225,6 +234,7 @@ int main(int argc, char** argv) {
         write_time += (end - begin);
 
         free(image);
+        printf("[%2d] Communication time: %f, Computing time: %f, Extra write time: %f, Waiting time: %f\n", rank, communication_time, computing_time, write_time, waiting_time);
     } else {
         /* allocate memory for image */
         int* image_row = (int*)malloc(width * sizeof(int));
@@ -247,7 +257,7 @@ int main(int argc, char** argv) {
         }
 
         free(image_row);
+        printf("[%2d] Communication time: %f, Computing time: %f\n", rank, communication_time, computing_time);
     }
     MPI_Finalize();
-    printf("[%2d] Communication time: %f,Computing time: %f ,Extra write time: %f\n", rank, communication_time, computing_time, write_time);
 }
