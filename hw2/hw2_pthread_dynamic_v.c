@@ -1,0 +1,227 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#define PNG_NO_SETJMP
+#include <sched.h>
+#include <assert.h>
+#include <png.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <emmintrin.h>
+#include <smmintrin.h>
+#include <pmmintrin.h>
+
+void write_png(const char* filename, int iters, int width, int height, const int* buffer) {
+    FILE* fp = fopen(filename, "wb");
+    assert(fp);
+    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    assert(png_ptr);
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    assert(info_ptr);
+    png_init_io(png_ptr, fp);
+    png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_set_filter(png_ptr, 0, PNG_NO_FILTERS);
+    png_write_info(png_ptr, info_ptr);
+    png_set_compression_level(png_ptr, 1);
+    size_t row_size = 3 * width * sizeof(png_byte);
+    png_bytep row = (png_bytep)malloc(row_size);
+    for (int y = 0; y < height; ++y) {
+        memset(row, 0, row_size);
+        for (int x = 0; x < width; ++x) {
+            int p = buffer[(height - 1 - y) * width + x];
+            png_bytep color = row + x * 3;
+            if (p != iters) {
+                if (p & 16) {
+                    color[0] = 240;
+                    color[1] = color[2] = p % 16 * 16;
+                } else {
+                    color[0] = p % 16 * 16;
+                }
+            }
+        }
+        png_write_row(png_ptr, row);
+    }
+    free(row);
+    png_write_end(png_ptr, NULL);
+    png_destroy_write_struct(&png_ptr, &info_ptr);
+    fclose(fp);
+}
+
+typedef struct thread_data {
+    int num_threads;
+    int t;
+    int iters;
+    double left;
+    double right;
+    double lower;
+    double upper;
+    int width;
+    int height;
+    int* image;
+    double computing_time;
+} thread_data;
+
+pthread_mutex_t mutex;
+int next_row = 0;
+
+void* mandelbrot_set_t(void* thread_d) {
+    thread_data* td = (thread_data*)thread_d;
+    int j;
+    struct timespec begin, end;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    while (1) {
+        pthread_mutex_lock(&mutex);
+        if (next_row < td->height) {
+            j = next_row;
+            next_row++;
+            pthread_mutex_unlock(&mutex);
+        } else {
+            pthread_mutex_unlock(&mutex);
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            td->computing_time = (end.tv_sec - begin.tv_sec);
+            td->computing_time += (end.tv_nsec - begin.tv_nsec) / 1000000000.0;
+            pthread_exit(NULL);
+        }
+
+        /* Mandelbrot set with vectorization. */
+        double y0 = j * ((td->upper - td->lower) / td->height) + td->lower;
+        __m128d y0s = _mm_set_pd1(y0);
+
+        int width1 = (td->width >> 1) << 1; // make sure the loop is aligned.
+        for (int i = 0; i < width1; i += 2) {
+            double x01 = i * ((td->right - td->left) / td->width) + td->left;
+            double x02 = (i+1) * ((td->right - td->left) / td->width) + td->left;
+            __m128d x0s = _mm_set_pd(x01, x02);
+
+            __m128d xs = _mm_set_pd1(0.0);
+            __m128d ys = _mm_set_pd1(0.0); 
+            __m128d lss = _mm_set_pd1(0.0); // lss means length_squareds
+            __m128d lss_threhold = _mm_set_pd1(4.0);
+            int repeats_A = 0;
+            int repeats_B = 0;
+            
+            while (1) {
+                if (repeats_A >= td->iters || repeats_B >= td->iters) break;    
+
+                // test if each length_squared >= 4
+                __m128d ll = _mm_cmpgt_pd(lss_threhold, lss);
+                int mask = _mm_movemask_pd(ll);
+                if (mask == 0) {
+                    break;
+                }
+                if (mask == 1) {
+                    repeats_A++;
+                } else if (mask == 2) {
+                    repeats_B++;
+                } else {
+                    repeats_A++;
+                    repeats_B++;
+                }
+                // temp = x * x - y * y + x0; 
+                __m128d xxs = _mm_mul_pd (xs, xs);
+                __m128d yys = _mm_mul_pd (ys, ys);
+                __m128d temps = _mm_sub_pd(xxs, yys);
+                temps = _mm_add_pd(temps, x0s);
+                
+                // y = 2 * x * y + y0; 
+                __m128d x2s = _mm_set_pd1(2.0);
+                x2s = _mm_mul_pd (x2s, xs);
+                ys = _mm_mul_pd (x2s, ys);
+                ys = _mm_add_pd (ys, y0s);
+                
+                xs = temps;
+                
+                // length_squared = x * x + y * y; 
+                xxs = _mm_mul_pd (xs, xs);
+                yys = _mm_mul_pd (ys, ys);
+                lss = _mm_add_pd(xxs, yys);
+            }
+            td->image[j * td->width + i] = repeats_B;
+            td->image[j * td->width + i + 1] = repeats_A;
+        }
+
+        /* Dealing with the remaining parts. */
+        for (int i = width1; i < td->width; i++) {
+            double x0 = i * ((td->right - td->left) / td->width) + td->left;
+            int repeats = 0;
+            double x = 0;
+            double y = 0;
+            double length_squared = 0;
+            while (repeats < td->iters && length_squared < 4) {
+                double temp = x * x - y * y + x0;
+                y = 2 * x * y + y0;
+                x = temp;
+                length_squared = x * x + y * y;
+                ++repeats;
+            }
+            td->image[j * td->width + i] = repeats;
+        }
+    }
+    pthread_exit(NULL);
+}
+
+int main(int argc, char** argv) {
+    /* detect how many CPUs are available */
+    cpu_set_t cpu_set;
+    sched_getaffinity(0, sizeof(cpu_set), &cpu_set);
+    printf("%d cpus available\n", CPU_COUNT(&cpu_set));
+
+    /* argument parsing */
+    assert(argc == 9);
+    const char* filename = argv[1];
+    int iters = strtol(argv[2], 0, 10);
+    double left = strtod(argv[3], 0);
+    double right = strtod(argv[4], 0);
+    double lower = strtod(argv[5], 0);
+    double upper = strtod(argv[6], 0);
+    int width = strtol(argv[7], 0, 10);
+    int height = strtol(argv[8], 0, 10);
+
+    /* allocate memory for image */
+    int* image = (int*)malloc(width * height * sizeof(int));
+    assert(image);
+
+    pthread_t threads[CPU_COUNT(&cpu_set)];
+    thread_data td[CPU_COUNT(&cpu_set)];
+    pthread_mutex_init(&mutex, NULL);
+    int rc;
+    int t;
+    int next_row = 0;
+    for (t = 0; t < CPU_COUNT(&cpu_set); t++) {
+        td[t].t = t;
+        td[t].num_threads = CPU_COUNT(&cpu_set);
+        td[t].iters = iters; 
+        td[t].left = left;
+        td[t].right = right;
+        td[t].lower = lower;
+        td[t].upper = upper;
+        td[t].width = width;
+        td[t].height = height;
+        td[t].image = image;
+        rc = pthread_create(&threads[t], NULL, mandelbrot_set_t, (void*)&td[t]);
+        if (rc) {
+            printf("ERROR; return code from pthread_create() is %d\n", rc);
+            exit(-1);
+        }
+    }
+    for (t = 0; t < CPU_COUNT(&cpu_set); t++) {
+        pthread_join(threads[t], NULL);
+    }
+
+    /* draw and cleanup */
+    clock_t begin, end;
+    double write_time;
+    begin = clock();
+    write_png(filename, iters, width, height, image);
+    end = clock();
+    write_time = ((double) (end - begin)) / CLOCKS_PER_SEC;
+    free(image);
+
+    for (t = 0; t < CPU_COUNT(&cpu_set); t++) {
+        printf("[thread %2d] Computing time: %f\n", t, td[t].computing_time);
+    }
+    printf("Write time: %f\n", write_time);
+}
