@@ -1,7 +1,7 @@
 CC = gcc
 CXX = g++
 CXXFLAGS = -O3 -pthread
-CFLAGS = -O3 -lm -pthread
+CFLAGS = -O3 -lm -pthread -fopenmp
 TARGETS = hw3
 
 .PHONY: all
