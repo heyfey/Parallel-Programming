@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
     cudaGetDeviceCount(&numDevs);
     printf("devices count: %d\n", numDevs);
 
-    //cudaMallocManaged(&Dist, V * V * sizeof(int));
+    cudaMallocManaged(&Dist, V * V * sizeof(int));
 
     begin = clock();
     input(argv[1]);
@@ -63,7 +63,6 @@ void input(char* infile) {
     fread(&n, sizeof(int), 1, file);
     fread(&m, sizeof(int), 1, file);
     printf("V = %d, E = %d\n", n, m);
-    cudaMallocManaged(&Dist, n * n * sizeof(int));
 
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
@@ -262,20 +261,13 @@ void block_FW() {
         int tid = omp_get_thread_num();
         cudaSetDevice(tid);
         if (tid == 0) {
-            grid.x = round;
-            grid.y = round;
-            cal_phase3 <<<grid, block_dim>>> (r, 0, 0, Dist, n);
-
-            /*
         if (r > 0) {
             grid.x = r;
             grid.y = r;
             cal_phase3 <<<grid, block_dim>>> (r, 0, 0, Dist, n);
             cudaDeviceSynchronize();
         }
-            */
         }
-        /*
         if (tid == 1) {
         if (r > 0 && bs > 0) {
             grid.x = r;
@@ -289,8 +281,6 @@ void block_FW() {
             cudaDeviceSynchronize();
         }
         }
-        */
-        /*
         if (tid == 0) {
         if (bs > 0) {
             grid.x = bs;
@@ -299,7 +289,6 @@ void block_FW() {
             cudaDeviceSynchronize();
         }
         }
-        */
 }
     }
     cudaDeviceSynchronize();
